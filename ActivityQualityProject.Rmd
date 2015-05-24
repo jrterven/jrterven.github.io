@@ -1,0 +1,186 @@
+---
+title: "Activity Quality"
+author: "Juan R. Terven"
+date: "23/05/2015"
+output: html_document
+---
+
+## Objective
+In this project we want to predict the manner in which participants performed weight-lifting exercises by using Machine Learning techniques. 
+
+## Dataset
+Six participants were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions: exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). 
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes.
+For data recording they used four 9 degrees of freedom Razor inertial measurement units (IMU), which provide three-axes acceleration, gyroscope and magnetometer data at a joint sampling rate of 45 Hz.
+They mounted the sensors in the users' glove, armband, lumbar belt and dumbbell.
+
+The database provides eight features for each variable extracted with a sliding window approach with different lengths from 0.5 second to 2.5 seconds, with 0.5 second overlap. The features were calculated on the Euler angles (roll, pitch and yaw), as well as the raw accelerometer, gyroscope and magnetometer readings. For the Euler angles of each of the four sensors they calculated eight features: mean, variance, standard deviation, max, min, amplitude, kurtosis and skewness, generating in total 96 derived feature sets.
+
+According to the paper, they used feature selection with the "Best First" strategy based on backtracking. They selected 17 features: in the belt, were selected the mean and variance of the roll, maximum, range and variance of the accelerometer vector, variance of the gyro and variance of the magnetometer. In the arm, the variance of the accelerometer vector and the maximum and minimum of the magnetometer were selected. In the dumbbell, the selected features were the maximum of the acceleration, variance of the gyro and maximum and minimum of the magnetometer, while in the glove, the sum of the pitch and the maximum and minimum of the gyro were selected.
+
+```{r, echo=FALSE}
+load(file="myWorkspace.RData")
+```
+
+## Preprocessing
+
+First we load the training and testing data:
+```{r, cache=TRUE, message=FALSE, eval=FALSE}
+training <- read.csv("pml-training.csv")
+testing <- read.csv("pml-testing.csv")
+```
+
+Then, remove the features extracted from the dataset (sliding window features) because we want to use the raw values.
+```{r, message=FALSE,eval=FALSE}
+# Remove the columns that contained the slinding window features
+drops <- grep("^max|^min|^kurtosis|^skewness|^amplitude|^avg|^var|^std", names(training), value=TRUE)
+training2 <- training[,!(names(training) %in% drops)]
+
+# Remove the rows that contained the sliding window features
+training2 <- subset(training2, new_window == "no")
+
+# Remove other unnecesary columns
+drops <- c("X","user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window","num_window")
+training2 <- training2[,!(names(training2) %in% drops)]
+```
+
+Let us standardize the values and remove redundant features with more than 0.70 of Correlation. The closer the correlation between two variables is to 1, the more related their behavior and the more redundant one is with respect to the other.
+
+```{r, message=FALSE, eval=FALSE}
+library(corrplot)
+library(caret)
+
+# scale all the features (from feature 1 to n-1, feature n is the outcome)
+training2.scale<- scale(training2[1:ncol(training2)-1],center=TRUE,scale=TRUE);
+
+# compute the correlation matrix
+corMatMy <- cor(training2.scale)
+
+# Apply correlation filter at 0.70
+highlyCor <- findCorrelation(corMatMy, 0.70)
+
+# then we remove all the variable correlated with more 0.7.
+trainingFiltered.scale <- training2.scale[,-highlyCor]
+corMatMy <- cor(trainingFiltered.scale)
+
+# Convert back to dataframe
+trainingFiltered = as.data.frame(trainingFiltered.scale)
+# add the outcome column
+trainingFiltered$classe <- training2$classe
+```
+
+```{r}
+library(corrplot)
+# Visualize the matrix, clustering features by correlation index.
+corrplot(corMatMy, order = "hclust")
+```
+
+Each square of the figure shows the correlation between two variables indicated by color. Here we can see that some of the variables are still moderate correlated; however, none is above .70.
+
+## Training
+
+Because we want to use most of our data for training, we can do cross-validation to get an estimate of what the testing error would be. However, we still want to test the performance on a separate small testing set. So we split the data in 99% for training and 1% for testing.
+
+```{r, message=FALSE, eval=FALSE}
+set.seed(1234)
+inTrain <- createDataPartition(y=trainingFiltered$classe,
+                               p=0.99, list=FALSE)
+trainingFinal <- trainingFiltered[inTrain,]
+testingFinal <- trainingFiltered[-inTrain,]
+```
+
+First we fit a simple Classification Tree with 10-fold Cross-validation to see how well it performs. 
+
+```{r, cache=TRUE, message=FALSE, eval=FALSE}
+set.seed(1234)
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    repeats = 10)
+
+modFit <- train(classe ~ .,method="rpart",data=trainingFinal,
+                trControl = fitControl)
+```
+
+```{r}
+modFit
+library(rattle)
+fancyRpartPlot(modFit$finalModel)
+```
+
+The Cross-Validation accuracy is 0.51. Now, we test the model on the testing set and compare with the CV results.
+
+```{r, message=FALSE}
+library(caret)
+predictions <- predict(modFit,newdata=testingFinal)
+confusionMatrix(predictions,testingFinal$classe)
+```
+
+We see that the accurary on the test set is 0.53. Pretty close to the Cross-Validation accuracy.
+
+Let us now try a more powerful method Boosted tree model and see how well it performs.
+```{r, message=FALSE, cache=TRUE, eval=FALSE}
+set.seed(1234)
+
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    repeats = 10)
+
+modFit2 <- train(classe ~ .,method="gbm",data=trainingFinal,
+                 trControl = fitControl, verbose = FALSE)
+```
+
+```{r, echo=FALSE}
+modFit2
+```
+
+The Accuracy column shows the Cross-validation accuracy (0.91), which is an estimate of the generatilization accuracy.
+
+The following graph allow us to examine the relationship between the estimates of performance and the tuning parameters. 
+
+```{r, message=FALSE}
+library(ggplot2)
+trellis.par.set(caretTheme())
+ggplot(modFit2)
+```
+
+Now, we test this second model on the test set.
+```{r, message=FALSE}
+predictions2 <- predict(modFit2,newdata=testingFinal)
+confusionMatrix(predictions2,testingFinal$classe)
+```
+
+We can see that the Cross-Validation generalization (0.91) accuracy is also close but a little overestimate of our generalization accuracy on our testing set (0.87). 
+
+Finally, let's try with a Random Forest and see how well it performs it performs.
+```{r, message=FALSE, cache=TRUE, eval=FALSE}
+set.seed(1234)
+
+fitControl <- trainControl(## 10-fold CV
+    method = "repeatedcv",
+    number = 10,
+    repeats = 10)
+
+modFit3 <- train(classe ~ .,method="rf",data=trainingFinal,
+                 trControl = fitControl, verbose = FALSE)
+```
+
+```{r, echo=FALSE}
+modFit3
+```
+
+And see how well performs on the test set.
+```{r, message=FALSE}
+predictions3 <- predict(modFit3,newdata=testingFinal)
+confusionMatrix(predictions3,testingFinal$classe)
+```
+
+We get a Cross-Validation accuracy of 0.99 and a generalization accuracy of 0.98.
+
+## Conclusion
+In this report we see that ensemble methods such as Stochastic Gradient Boosting and Random Forest are more powerful in this classification problem. However, these methods sacrifice interpretability for accuracy. 
+Also, training time is orders of magnitude larger for the ensemble methods.
+
+
+
